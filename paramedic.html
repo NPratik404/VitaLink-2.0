@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paramedic Portal | VitaLink</title>
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header class="glass-panel" style="margin: 2rem auto; max-width: 1200px;">
+        <a href="index.html" class="logo">
+            <i class="fa-solid fa-truck-medical"></i>
+            Paramedic App
+        </a>
+        <nav>
+            <a href="index.html">Home</a>
+            <a href="#" class="active"><i class="fa-solid fa-user-doctor"></i> <span id="userName">Paramedic Portal</span></a>
+            <a href="#" onclick="Auth.logout('paramedic')">Logout</a>
+        </nav>
+    </header>
+
+    <main class="container grid grid-cols-2">
+        <!-- Patient Context -->
+        <section class="glass-panel" style="padding: 2rem;">
+            <h2 class="card-title"><i class="fa-solid fa-user-injured" style="color: var(--primary);"></i> Patient Context</h2>
+            
+            <div class="form-group mt-1">
+                <label>Linked Virtual ID</label>
+                <div style="display: flex; gap: 1rem;">
+                    <input type="text" id="pId" class="form-control" value="12345678901234">
+                    <button id="loadPatientBtn" class="btn btn-outline">Load</button>
+                </div>
+            </div>
+
+            <div id="patientInfo" class="hidden mt-1 p-2" style="background: rgba(0,119,182,0.05); border-radius: 8px; padding: 1rem;">
+                <p><strong>Name:</strong> <span id="pName"></span></p>
+                <p><strong>Age/Blood:</strong> <span id="pAge"></span> / <span id="pBlood"></span></p>
+                <p><strong>History:</strong> <span id="pHistory"></span></p>
+            </div>
+        </section>
+
+        <!-- Voice Triage -->
+        <section class="glass-panel" style="padding: 2rem; position: relative;">
+            <div style="position: absolute; top: 1rem; right: 1rem;">
+                <span class="badge badge-green"><i class="fa-solid fa-bolt"></i> 5G Connected</span>
+            </div>
+
+            <h2 class="card-title text-center"><i class="fa-solid fa-microphone-lines"></i> AI Voice Triage</h2>
+            <p class="text-center text-secondary mb-2" style="font-size: 0.9rem;">Speak patient vitals and symptoms clearly.</p>
+
+            <button id="micBtn" class="glass-panel mic-btn">
+                <i class="fa-solid fa-microphone"></i>
+            </button>
+            <p id="micStatus" class="text-center mt-1 text-secondary" style="height: 1.5rem;">Tap to start recording</p>
+
+            <div class="form-group mt-2">
+                <label>Transcribed & Extracted Data</label>
+                <textarea id="transcription" class="form-control" rows="4" placeholder="e.g. 55 year old female, acute onset left-sided weakness, facial droop, slurred speech..."></textarea>
+            </div>
+
+            <button id="beamBtn" class="btn btn-danger" style="width: 100%; justify-content: center;" disabled>
+                <i class="fa-solid fa-satellite-dish"></i> Beam to ER Dashboard
+            </button>
+        </section>
+    </main>
+
+    <section class="container mt-2 mb-2">
+        <h2 class="card-title mb-1"><i class="fa-solid fa-clock-rotate-left"></i> My Transports</h2>
+        <p class="text-secondary" id="transportsEmpty">No active transports.</p>
+        <div id="transportsList" class="grid grid-cols-3">
+            <!-- Rendered by JS -->
+        </div>
+    </section>
+
+    <script src="app.js"></script>
+    <script>
+        const currentUser = Auth.requireRole('paramedic');
+        document.getElementById('userName').innerText = currentUser.name;
+
+        let loadedPatient = null;
+        let isRecording = false;
+
+        // Speech Recognition Setup
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+
+            recognition.onresult = (event) => {
+                let finalTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    }
+                }
+                if (finalTranscript) {
+                    const txtArea = document.getElementById('transcription');
+                    txtArea.value += (txtArea.value ? ' ' : '') + finalTranscript;
+                    checkEnableBeam();
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Speech error", event);
+                isRecording = false;
+                updateMicUI();
+                showToast("Microphone error. Please type manually.", "danger");
+            };
+            
+            recognition.onend = () => {
+                isRecording = false;
+                updateMicUI();
+            }
+        }
+
+        function updateMicUI() {
+            const btn = document.getElementById('micBtn');
+            const status = document.getElementById('micStatus');
+            if (isRecording) {
+                btn.classList.add('recording');
+                status.innerText = "Listening... (Tap to stop)";
+            } else {
+                btn.classList.remove('recording');
+                status.innerText = "Tap to start recording";
+            }
+        }
+
+        document.getElementById('micBtn').addEventListener('click', () => {
+            if (!recognition) {
+                showToast("Voice recognition not supported in this browser. Please type.", "warning");
+                return;
+            }
+
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                recognition.start();
+                isRecording = true;
+                updateMicUI();
+            }
+        });
+
+        // Load Patient
+        document.getElementById('loadPatientBtn').addEventListener('click', async () => {
+            const id = document.getElementById('pId').value.trim();
+            if (!id) return;
+
+            try {
+                loadedPatient = await VitaLinkAPI.scanCard(id);
+                document.getElementById('pName').innerText = loadedPatient.name;
+                document.getElementById('pAge').innerText = loadedPatient.age;
+                document.getElementById('pBlood').innerText = loadedPatient.bloodType;
+                document.getElementById('pHistory').innerText = loadedPatient.history.join(', ');
+                document.getElementById('patientInfo').classList.remove('hidden');
+                document.getElementById('patientInfo').classList.add('fade-in');
+                checkEnableBeam();
+                showToast('Patient Context Loaded');
+            } catch(e) {
+                showToast(e.message, 'danger');
+            }
+        });
+
+        document.getElementById('transcription').addEventListener('input', checkEnableBeam);
+
+        function checkEnableBeam() {
+            const txt = document.getElementById('transcription').value.trim();
+            document.getElementById('beamBtn').disabled = !(loadedPatient && txt.length > 5);
+        }
+
+        // Beam to ER
+        document.getElementById('beamBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('beamBtn');
+            const txt = document.getElementById('transcription').value.trim();
+            
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Beaming...';
+            btn.disabled = true;
+
+            const extractedData = { notes: txt };
+
+            try {
+                const res = await VitaLinkAPI.beamToER(loadedPatient, extractedData);
+                if (res.success) {
+                    showToast(`Data beamed successfully! Incident: ${res.incidentId}`, 'success');
+                    // Reset
+                    document.getElementById('transcription').value = '';
+                    loadedPatient = null;
+                    document.getElementById('patientInfo').classList.add('hidden');
+                    document.getElementById('pId').value = '';
+                    renderTransports();
+                }
+            } catch(e) {
+                showToast('Failed to beam data', 'danger');
+            } finally {
+                btn.innerHTML = '<i class="fa-solid fa-satellite-dish"></i> Beam to ER Dashboard';
+                btn.disabled = true;
+            }
+        });
+
+        let lastTransportsStr = '';
+        function renderTransports() {
+            const list = document.getElementById('transportsList');
+            const empty = document.getElementById('transportsEmpty');
+            const incidents = VitaLinkAPI.getParamedicIncidents(currentUser.username);
+            
+            const newTransportsStr = JSON.stringify(incidents);
+            if (lastTransportsStr === newTransportsStr) return;
+            lastTransportsStr = newTransportsStr;
+            
+            if(incidents.length === 0) {
+                list.innerHTML = '';
+                empty.classList.remove('hidden');
+                return;
+            }
+            empty.classList.add('hidden');
+            list.innerHTML = '';
+            
+            let currentDateStr = '';
+
+            incidents.forEach((inc) => {
+                const dateStr = new Date(inc.timestamp).toLocaleDateString();
+                if (dateStr !== currentDateStr) {
+                    const header = document.createElement('div');
+                    header.style.gridColumn = '1 / -1';
+                    header.style.padding = '0.5rem 0';
+                    header.style.borderBottom = '1px solid rgba(255,255,255,0.1)';
+                    header.style.marginBottom = '0.5rem';
+                    header.innerHTML = `<strong class="text-secondary"><i class="fa-regular fa-calendar"></i> ${dateStr === new Date().toLocaleDateString() ? 'Today' : dateStr}</strong>`;
+                    list.appendChild(header);
+                    currentDateStr = dateStr;
+                }
+
+                const card = document.createElement('div');
+                card.className = `glass-panel fade-in`;
+                card.style.padding = '1.5rem';
+                card.style.borderTop = `4px solid var(--${inc.priority})`;
+                
+                let badgeClass = 'badge-yellow';
+                let statusIcon = '<i class="fa-solid fa-spinner fa-spin"></i>';
+                if(inc.status === 'Accepted') {
+                    badgeClass = 'badge-green';
+                    statusIcon = '<i class="fa-solid fa-check-double"></i>';
+                } else if(inc.status.includes('Allocated')) {
+                    badgeClass = 'badge-red';
+                    statusIcon = '<i class="fa-solid fa-bed-pulse"></i>';
+                } else if(inc.status === 'Discharged') {
+                    badgeClass = 'badge-primary';
+                    statusIcon = '<i class="fa-solid fa-house-medical"></i>';
+                }
+
+                card.innerHTML = `
+                    <div style="display:flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                        <strong>${inc.patient.name}</strong>
+                        <span class="badge ${badgeClass}">${statusIcon} ${inc.status}</span>
+                    </div>
+                    <div class="text-secondary" style="font-size: 0.9rem;">ID: ${inc.incidentId}</div>
+                    <div class="text-secondary mt-1" style="font-size: 0.8rem;">Priority: ${inc.priority.toUpperCase()}</div>
+                `;
+                list.appendChild(card);
+            });
+        }
+        
+        setInterval(renderTransports, 2000);
+        renderTransports();
+    </script>
+</body>
+</html>
